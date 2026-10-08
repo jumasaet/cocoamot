@@ -1,0 +1,47 @@
+# EMGI ablation on the synthetic set:
+#   (a) maximum gap length filled by EMGI (warp mode) on BoT-SORT;
+#   (b) warp vs linear interpolation (lerp) at max_gap 8, with and without EMTS, for every tracker.
+name: gap_ablation
+
+datasets:
+  synthetic:
+    path: synthetic
+    sequences: [seq_0001, seq_0002, seq_0003, seq_0004, seq_0005, seq_0006, seq_0007, seq_0008, seq_0009, seq_0010]
+    # gt/gt.txt already encodes the evaluation protocol: boxes < 2% of the frame (w or h) or > 80% occluded
+    # are class 7 (ignored). Regenerate or change it with scripts/prepare_gt.py.
+
+trackers: [botsort, bytetrack, ocsort, deepocsort]
+external_trackers: [agt]
+warps: {method: sparseOptFlow, downscale: 2, mask: false}
+
+runs:
+  - name: warp_02
+    trackers: [botsort]
+    emgi: {mode: warp, max_gap: 2, conf: 0.5}
+    variants: [base, emgi]
+  - name: warp_08
+    trackers: [botsort]
+    emgi: {mode: warp, max_gap: 8, conf: 0.5}
+    variants: [base, emgi]
+  - name: warp_15
+    trackers: [botsort]
+    emgi: {mode: warp, max_gap: 15, conf: 0.5}
+    variants: [base, emgi]
+  - name: warp_30
+    trackers: [botsort]
+    emgi: {mode: warp, max_gap: 30, conf: 0.5}
+    variants: [base, emgi]
+  - name: warp_60
+    trackers: [botsort]
+    emgi: {mode: warp, max_gap: 60, conf: 0.5}
+    variants: [base, emgi]
+  - name: lerp_08
+    emts: {max_time_gap: 60, min_iou: 0.25}
+    emgi: {mode: lerp, max_gap: 8, conf: 0.5}
+    variants: [base, emgi, emts_emgi]
+  - name: warp_vs_lerp_08
+    emts: {max_time_gap: 60, min_iou: 0.25}
+    emgi: {mode: warp, max_gap: 8, conf: 0.5}
+    variants: [base, emgi, emts_emgi]
+
+evaluation: {benchmark: CocoaMOT}

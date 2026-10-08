@@ -1,0 +1,27 @@
+# Occlusion analysis on the synthetic set: evaluate only boxes whose occlusion (1 - visibility) falls in each
+# 20% bucket (min size 2%), then combine the buckets (0-100%) and run paired Wilcoxon tests vs the base tracker.
+name: occlusion
+
+datasets:
+  synthetic:
+    path: synthetic
+    sequences: [seq_0001, seq_0002, seq_0003, seq_0004, seq_0005, seq_0006, seq_0007, seq_0008, seq_0009, seq_0010]
+
+trackers: [botsort, bytetrack, ocsort, deepocsort]
+warps: {method: sparseOptFlow, downscale: 2, mask: false}
+
+runs:
+  - name: default
+    emts: {max_time_gap: 60, min_iou: 0.25}
+    emgi: {mode: warp, max_gap: 8, conf: 0.5}
+    variants: [base, emts, emgi, emts_emgi]
+
+evaluation:
+  benchmark: CocoaMOT
+  occlusion_buckets:
+    src: gt/gt.txt
+    min_wh: 0.02
+    intervals: [[0.0, 0.2], [0.2, 0.4], [0.4, 0.6], [0.6, 0.8], [0.8, 1.0]]
+
+significance:
+  test_buckets: ["00_20", "20_40", "40_60", "60_80"]   # 80-100 enters the combined table but is not tested

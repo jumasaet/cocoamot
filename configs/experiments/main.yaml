@@ -1,0 +1,30 @@
+# Main results: 4 Ultralytics trackers + AGT (external) x {base, EMTS, EMGI, EMTS+EMGI}
+# on CocoaMOT-synthetic, CocoaMOT-real and AppleMOTS.
+name: main
+
+datasets:
+  synthetic:
+    path: synthetic
+    sequences: [seq_0001, seq_0002, seq_0003, seq_0004, seq_0005, seq_0006, seq_0007, seq_0008, seq_0009, seq_0010]
+    # gt/gt.txt already encodes the evaluation protocol: boxes < 2% of the frame (w or h) or > 80% occluded
+    # are class 7 (ignored). Regenerate or change it with scripts/prepare_gt.py.
+  real:
+    path: real/verified
+    sequences: [seq_0001, seq_0006, seq_0007, seq_0008]
+  applemot:
+    path: applemot
+    sequences: ["0006", "0007", "0008", "0010", "0011", "0012"]
+    external_trackers: []          # AGT was not evaluated on AppleMOTS
+
+trackers: [botsort, bytetrack, ocsort, deepocsort]
+external_trackers: [agt]           # third_party/README.md: results go to <out>/<dataset>/tracks/agt/<seq>.txt
+
+warps: {method: sparseOptFlow, downscale: 2, mask: false}
+
+runs:
+  - name: default
+    emts: {max_time_gap: 60, min_iou: 0.25}
+    emgi: {mode: warp, max_gap: 8, conf: 0.5}
+    variants: [base, emts, emgi, emts_emgi]
+
+evaluation: {benchmark: CocoaMOT}

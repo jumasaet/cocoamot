@@ -1,0 +1,45 @@
+# Camera-motion estimator ablation: EMTS+EMGI with each warp method (the same method in both stages).
+# The learned matchers (loftr, disk_lightglue, xfeat) need: pip install -e ".[learned]"
+name: gmc_ablation
+
+datasets:
+  synthetic:
+    path: synthetic
+    sequences: [seq_0001, seq_0002, seq_0003, seq_0004, seq_0005, seq_0006, seq_0007, seq_0008, seq_0009, seq_0010]
+    # gt/gt.txt already encodes the evaluation protocol: boxes < 2% of the frame (w or h) or > 80% occluded
+    # are class 7 (ignored). Regenerate or change it with scripts/prepare_gt.py.
+
+trackers: [botsort, bytetrack, ocsort, deepocsort]
+warps: {method: sparseOptFlow, downscale: 2, mask: false}
+
+runs:
+  - name: sparseOptFlow
+    emts: {max_time_gap: 60, min_iou: 0.25, gmc_method: sparseOptFlow}
+    emgi: {mode: warp, max_gap: 8, conf: 0.5, gmc_method: sparseOptFlow}
+    variants: [emts_emgi]
+  - name: orb
+    emts: {max_time_gap: 60, min_iou: 0.25, gmc_method: orb}
+    emgi: {mode: warp, max_gap: 8, conf: 0.5, gmc_method: orb}
+    variants: [emts_emgi]
+  - name: sift
+    emts: {max_time_gap: 60, min_iou: 0.25, gmc_method: sift}
+    emgi: {mode: warp, max_gap: 8, conf: 0.5, gmc_method: sift}
+    variants: [emts_emgi]
+  - name: ecc
+    emts: {max_time_gap: 60, min_iou: 0.25, gmc_method: ecc}
+    emgi: {mode: warp, max_gap: 8, conf: 0.5, gmc_method: ecc}
+    variants: [emts_emgi]
+  - name: loftr
+    emts: {max_time_gap: 60, min_iou: 0.25, gmc_method: loftr}
+    emgi: {mode: warp, max_gap: 8, conf: 0.5, gmc_method: loftr}
+    variants: [emts_emgi]
+  - name: disk_lightglue
+    emts: {max_time_gap: 60, min_iou: 0.25, gmc_method: disk_lightglue}
+    emgi: {mode: warp, max_gap: 8, conf: 0.5, gmc_method: disk_lightglue}
+    variants: [emts_emgi]
+  - name: xfeat
+    emts: {max_time_gap: 60, min_iou: 0.25, gmc_method: xfeat}
+    emgi: {mode: warp, max_gap: 8, conf: 0.5, gmc_method: xfeat}
+    variants: [emts_emgi]
+
+evaluation: {benchmark: CocoaMOT}

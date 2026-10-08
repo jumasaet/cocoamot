@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cocoamot"
+version = "1.0.0"
+description = "EMGI (ego-motion gap interpolation) and EMTS (ego-motion track stitching) for tracking static objects from a moving camera"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT (see LICENSE); AGPL-3.0 for patches/ and src/cocoamot/warps/estimators.py" }
+dependencies = [
+    "ultralytics==8.4.84",   # pinned: patches/ultralytics_ours.patch targets this release (== commit cc8576c36)
+    "lap>=0.5.12",           # tracker assignment; otherwise Ultralytics auto-installs it at runtime
+    "numpy",
+    "scipy",                 # Hungarian assignment (EMTS), Wilcoxon tests, patched Kalman update
+    "pandas",
+    "pyyaml",
+    "opencv-python",
+    "matplotlib",            # tools/bbox_stats.py
+]
+
+[project.optional-dependencies]
+eval = ["trackeval @ git+https://github.com/JonathonLuiten/TrackEval.git@12c8791b303e0a0b50f753af204249e622d0281a"]
+learned = ["kornia>=0.7.1"]  # LoFTR / DISK+LightGlue warps (XFeat is fetched with torch.hub)
+
+[tool.setuptools.packages.find]
+where = ["src"]

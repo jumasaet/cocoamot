@@ -1,0 +1,35 @@
+# EMTS ablation: minimum warped IoU (tau) to stitch two tracks, BoT-SORT on the real set.
+name: tau_ablation
+
+datasets:
+  real:
+    path: real/verified
+    sequences: [seq_0001, seq_0006, seq_0007, seq_0008]
+
+trackers: [botsort]
+warps: {method: sparseOptFlow, downscale: 2, mask: false}
+
+runs:
+  - name: tau_00
+    emts: {max_time_gap: 60, min_iou: 0.00}
+    variants: [base, emts]
+  - name: tau_05
+    emts: {max_time_gap: 60, min_iou: 0.05}
+    variants: [base, emts]
+  - name: tau_15
+    emts: {max_time_gap: 60, min_iou: 0.15}
+    variants: [base, emts]
+  - name: tau_25
+    emts: {max_time_gap: 60, min_iou: 0.25}
+    variants: [base, emts]
+  - name: tau_35
+    emts: {max_time_gap: 60, min_iou: 0.35}
+    variants: [base, emts]
+  - name: tau_45
+    emts: {max_time_gap: 60, min_iou: 0.45}
+    variants: [base, emts]
+  - name: tau_55
+    emts: {max_time_gap: 60, min_iou: 0.55}
+    variants: [base, emts]
+
+evaluation: {benchmark: CocoaMOT}

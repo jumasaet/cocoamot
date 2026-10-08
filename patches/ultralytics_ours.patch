@@ -1,0 +1,399 @@
+Ablation panel ("Ours") for Ultralytics trackers, used by every BoT-SORT result of the paper.
+
+Base: ultralytics 8.4.84 == git commit cc8576c36f881e474a034ba5e1a534f89720bbf0 (the five patched files are
+identical in the PyPI wheel and in that commit). Files: trackers/bot_sort.py, trackers/byte_tracker.py,
+trackers/utils/kalman_filter.py, trackers/utils/matching.py, cfg/trackers/botsort.yaml.
+
+Adds: omega occlusion signal, ReID firewall, DIoU rescue, omega innovation penalty (all gated, off by default),
+static-object velocity prior (static_prior_beta) and a w/h floor (min_wh_clamp). The paper's BoT-SORT uses
+static_prior_beta=0.2 and min_wh_clamp=5.0 (configs/trackers/botsort.yaml). New dependency: scipy.
+KalmanFilterXYWH.update uses a Cholesky solve (scipy) instead of np.linalg.solve.
+
+Apply to an installed package:   patch -p1 -d "$(python -c 'import ultralytics, os; print(os.path.dirname(os.path.dirname(ultralytics.__file__)))')" < patches/ultralytics_ours.patch
+Apply to a source checkout:      git apply patches/ultralytics_ours.patch
+diff --git a/ultralytics/cfg/trackers/botsort.yaml b/ultralytics/cfg/trackers/botsort.yaml
+index 667b51d61..419bce5b0 100644
+--- a/ultralytics/cfg/trackers/botsort.yaml
++++ b/ultralytics/cfg/trackers/botsort.yaml
+@@ -19,3 +19,13 @@ proximity_thresh: 0.5 # (float) Min IoU to consider tracks proximate for ReID; h
+ appearance_thresh: 0.8 # (float) Min appearance similarity for ReID; raise to avoid identity swaps
+ with_reid: False # (bool) Enable ReID model use; needs extra model and compute
+ model: auto # (str) ReID model name/path; "auto" uses detector features if available
++
++# Ablation control panel ("Ours") — all defaults reproduce vanilla BoT-SORT bit-for-bit
++use_reid_firewall: False # (bool) Command 1: block ReID feature update while omega > omega_tau (occlusion)
++use_diou_rescue: False # (bool) Command 2: use DIoU instead of IoU + force appearance dist to 1.0 while occluded
++use_omega_penalty: False # (bool) Command 3: scale innovation covariance by 1 + omega_lambda*omega while occluded
++omega_tau: 0.35 # (float) Occlusion threshold on omega (area-discrepancy); a track is "occluded" when omega > omega_tau
++omega_lambda: 10.0 # (float) Command 3 gain for the innovation-covariance penalty (1 + omega_lambda*omega)
++omega_alpha: 0.0 # (float) EMA smoothing factor for omega; 0.0 = no smoothing (use raw per-frame omega)
++static_prior_beta: 0.0 # (float) Static-object prior: damp Kalman velocities by (1 - beta) each predict; 0.0 = off
++min_wh_clamp: 0.0 # (float) Geometric floor (px) on width/height after update; 0.0 = disabled
+diff --git a/ultralytics/trackers/bot_sort.py b/ultralytics/trackers/bot_sort.py
+index b0d0e9974..0884e500f 100644
+--- a/ultralytics/trackers/bot_sort.py
++++ b/ultralytics/trackers/bot_sort.py
+@@ -49,6 +49,12 @@ class BOTrack(STrack):
+ 
+     shared_kalman = KalmanFilterXYWH()
+ 
++    # Ablation panel (Ours), configured by BOTSORT.__init__. Defaults reproduce vanilla BoT-SORT:
++    #   use_reid_firewall=False -> features always updated; omega_alpha=0.0 -> raw (unsmoothed) omega.
++    use_reid_firewall = False  # Command 1: freeze ReID feature update while omega > omega_tau
++    omega_tau = 0.35  # occlusion threshold on omega
++    omega_alpha = 0.0  # EMA smoothing factor for omega (0.0 = raw per-frame omega)
++
+     def __init__(self, xywh: np.ndarray, score: float, cls: int, feat: np.ndarray | None = None):
+         """Initialize a BOTrack object with feature-smoothing state and a Kalman filter.
+ 
+@@ -64,6 +70,7 @@ class BOTrack(STrack):
+         self.smooth_feat = None
+         self.curr_feat = None
+         self.alpha = 0.9
++        self.omega = 0.0  # EMA-smoothed area-discrepancy occlusion signal (Ours); updated in update()
+         if feat is not None:
+             self.update_features(feat)
+ 
+@@ -90,8 +97,24 @@ class BOTrack(STrack):
+ 
+     def update(self, new_track: BOTrack, frame_id: int) -> None:
+         """Update the track with new detection information and the current frame ID."""
++        # --- omega: predicted-vs-detected area discrepancy (Ours) ------------------------
++        # omega in [0, 1] measures how much smaller the detection is than the Kalman prediction;
++        # a large value flags occlusion. It is always computed (cheap, and consumed by Command 3
++        # in the Kalman filter), then EMA-smoothed by omega_alpha. omega_alpha=0.0 -> raw omega.
++        A_pred = float(self.mean[2]) * float(self.mean[3])
++        tlwh_array = new_track.tlwh
++        A_det = float(tlwh_array[2]) * float(tlwh_array[3])
++        raw_omega = max(0.0, min(1.0, 1.0 - (A_det / A_pred))) if A_pred > 0 else 0.0
++        self.omega = self.omega_alpha * self.omega + (1.0 - self.omega_alpha) * raw_omega
++
++        # --- Command 1 (use_reid_firewall): freeze ReID features under occlusion (Ours) ---
++        # Vanilla BoT-SORT always folds the new feature into the EMA. When the firewall is on and
++        # the track is occluded (omega > omega_tau) we skip the update so the appearance model is
++        # not poisoned by the occluder. Flag off (default) -> update always -> vanilla BoT-SORT.
+         if new_track.curr_feat is not None:
+-            self.update_features(new_track.curr_feat)
++            if not (self.use_reid_firewall and self.omega > self.omega_tau):
++                self.update_features(new_track.curr_feat)
++
+         super().update(new_track, frame_id)
+ 
+     @property
+@@ -172,9 +195,32 @@ class BOTSORT(BYTETracker):
+         self.appearance_thresh = args.appearance_thresh
+         self.encoder = build_encoder(args.with_reid, args.model)
+ 
++        # Push the ablation panel (Ours) onto BOTrack so every track sees Command 1 config.
++        BOTrack.use_reid_firewall = self.use_reid_firewall
++        BOTrack.omega_tau = self.omega_tau
++        BOTrack.omega_alpha = self.omega_alpha
++
++        # The static-object prior runs in multi_predict(), and BOTrack predicts through the shared
++        # class-level Kalman filter (BOTrack.shared_kalman) -- NOT through self.kalman_filter. So the
++        # ablation knobs must be applied to shared_kalman too, or beta never reaches the predict path.
++        self._configure_kalmanfilter(BOTrack.shared_kalman)
++
++    def _configure_kalmanfilter(self, kf: KalmanFilterXYWH) -> KalmanFilterXYWH:
++        """Copy the ablation control-panel knobs (Ours) onto a Kalman-filter instance.
++
++        Applies Command 3 (omega penalty), the static-object prior, and the geometric clamp. With all
++        knobs at their defaults this leaves an unmodified KalmanFilterXYWH.
++        """
++        kf.use_omega_penalty = self.use_omega_penalty
++        kf.omega_tau = self.omega_tau
++        kf.omega_lambda = self.omega_lambda
++        kf.static_prior_beta = self.static_prior_beta
++        kf.min_wh_clamp = self.min_wh_clamp
++        return kf
++
+     def get_kalmanfilter(self) -> KalmanFilterXYWH:
+-        """Return an instance of KalmanFilterXYWH for predicting and updating object states in the tracking process."""
+-        return KalmanFilterXYWH()
++        """Return a KalmanFilterXYWH configured with the ablation control panel (Ours)."""
++        return self._configure_kalmanfilter(KalmanFilterXYWH())
+ 
+     def init_track(self, results, img: np.ndarray | None = None) -> list[BOTrack]:
+         """Initialize object tracks using detection bounding boxes, scores, class labels, and optional ReID features."""
+@@ -187,17 +233,33 @@ class BOTSORT(BYTETracker):
+         return [BOTrack(xywh, s, c) for (xywh, s, c) in zip(bboxes, results.conf, results.cls)]
+ 
+     def get_dists(self, tracks: list[BOTrack], detections: list[BOTrack]) -> np.ndarray:
+-        """Calculate distances between tracks and detections using IoU and optionally ReID embeddings."""
+-        dists = matching.iou_distance(tracks, detections)
++        """Calculate distances between tracks and detections using IoU (or DIoU) and optionally ReID embeddings."""
++        # Command 2 (use_diou_rescue): spatial cost from DIoU instead of plain IoU. DIoU adds a
++        # center-distance term, which recovers matches when GMC leaves a residual offset under
++        # occlusion. Flag off (default) -> plain IoU -> vanilla BoT-SORT.
++        if self.use_diou_rescue:
++            dists = matching.diou_distance(tracks, detections)
++        else:
++            dists = matching.iou_distance(tracks, detections)
+         dists_mask = dists > (1 - self.proximity_thresh)
+ 
+         if self.args.fuse_score:
+             dists = matching.fuse_score(dists, detections)
+ 
++        # ReID appearance distance.
+         if self.args.with_reid and self.encoder is not None:
+             emb_dists = matching.embedding_distance(tracks, detections) / 2.0
+             emb_dists[emb_dists > (1 - self.appearance_thresh)] = 1.0
+             emb_dists[dists_mask] = 1.0
++
++            # Command 2 (use_diou_rescue), appearance half: for an occluded track (omega > omega_tau)
++            # force its appearance row to 1.0 so association falls back to pure geometry, since the
++            # ReID embedding is unreliable while occluded. Gated by the same flag; off -> vanilla.
++            if self.use_diou_rescue:
++                for i, track in enumerate(tracks):
++                    if getattr(track, "omega", 0.0) > self.omega_tau:
++                        emb_dists[i, :] = 1.0
++
+             dists = np.minimum(dists, emb_dists)
+         return dists
+ 
+diff --git a/ultralytics/trackers/byte_tracker.py b/ultralytics/trackers/byte_tracker.py
+index 708db8960..a687956b2 100644
+--- a/ultralytics/trackers/byte_tracker.py
++++ b/ultralytics/trackers/byte_tracker.py
+@@ -143,6 +143,15 @@ class STrack(BaseTrack):
+         self.tracklet_len += 1
+ 
+         new_tlwh = new_track.tlwh
++
++        # Command 3 (use_omega_penalty): forward this track's per-frame occlusion signal to the
++        # Kalman filter, which scales the innovation covariance in project(). The KF's own flags
++        # (set in BYTETracker.get_kalmanfilter) decide whether the signal is actually used, so with
++        # the ablation off this attribute is simply ignored -> vanilla BoT-SORT.
++        self.kalman_filter.current_omega = getattr(self, "omega", 0.0)
++
++        # NOTE: upstream BoT-SORT does NOT pass confidence here (NSA-Kalman off in the update step),
++        # so we keep it off to preserve the bit-for-bit baseline. Do not add new_track.score back.
+         self.mean, self.covariance = self.kalman_filter.update(
+             self.mean, self.covariance, self.convert_coords(new_tlwh)
+         )
+@@ -246,6 +255,23 @@ class BYTETracker:
+ 
+     track_class = STrack
+ 
++    # ------------------------------------------------------------------
++    # Ablation control panel ("Ours").
++    # These are the built-in DEFAULTS; every value is read from the tracker
++    # YAML in __init__ (see _init_ablation_panel) and mirrored back here so
++    # that all defaults reproduce vanilla BoT-SORT bit-for-bit:
++    #   use_reid_firewall / use_diou_rescue / use_omega_penalty = False
++    #   static_prior_beta = 0.0, min_wh_clamp = 0.0, omega_alpha = 0.0
++    # ------------------------------------------------------------------
++    use_reid_firewall = False  # Command 1: freeze ReID feature update under occlusion
++    use_diou_rescue = False  # Command 2: DIoU + appearance-distance=1.0 under occlusion
++    use_omega_penalty = False  # Command 3: inflate innovation covariance under occlusion
++    omega_tau = 0.35  # occlusion threshold on omega
++    omega_lambda = 10.0  # Command 3 penalty gain
++    omega_alpha = 0.0  # EMA smoothing factor for omega (0.0 = raw omega)
++    static_prior_beta = 0.0  # static-object velocity damping (0.0 = off)
++    min_wh_clamp = 0.0  # geometric floor (px) on w/h after update (0.0 = off)
++
+     def __init__(self, args):
+         """Initialize a BYTETracker instance for object tracking.
+ 
+@@ -259,9 +285,26 @@ class BYTETracker:
+         self.frame_id = 0
+         self.args = args
+         self.max_frames_lost = args.track_buffer
++        self._init_ablation_panel(args)
+         self.kalman_filter = self.get_kalmanfilter()
+         self.reset_id()
+ 
++    def _init_ablation_panel(self, args) -> None:
++        """Load the ablation control panel from the tracker YAML (``args``), falling back to class defaults.
++
++        Every knob defaults to its vanilla-BoT-SORT value, so a config that omits these keys behaves exactly
++        like upstream BoT-SORT. Values are stored on the instance and, for the Kalman-filter knobs, forwarded
++        to the filter object in ``get_kalmanfilter``.
++        """
++        self.use_reid_firewall = bool(getattr(args, "use_reid_firewall", type(self).use_reid_firewall))
++        self.use_diou_rescue = bool(getattr(args, "use_diou_rescue", type(self).use_diou_rescue))
++        self.use_omega_penalty = bool(getattr(args, "use_omega_penalty", type(self).use_omega_penalty))
++        self.omega_tau = float(getattr(args, "omega_tau", type(self).omega_tau))
++        self.omega_lambda = float(getattr(args, "omega_lambda", type(self).omega_lambda))
++        self.omega_alpha = float(getattr(args, "omega_alpha", type(self).omega_alpha))
++        self.static_prior_beta = float(getattr(args, "static_prior_beta", type(self).static_prior_beta))
++        self.min_wh_clamp = float(getattr(args, "min_wh_clamp", type(self).min_wh_clamp))
++
+     def update(self, results, img: np.ndarray | None = None, feats: np.ndarray | None = None, **kwargs) -> np.ndarray:
+         """Update the tracker with new detections and return the current list of tracked objects."""
+         self.frame_id += 1
+diff --git a/ultralytics/trackers/utils/kalman_filter.py b/ultralytics/trackers/utils/kalman_filter.py
+index ce8592b6e..cbdf82a5a 100644
+--- a/ultralytics/trackers/utils/kalman_filter.py
++++ b/ultralytics/trackers/utils/kalman_filter.py
+@@ -3,6 +3,7 @@
+ from __future__ import annotations
+ 
+ import numpy as np
++import scipy.linalg
+ 
+ 
+ class KalmanFilterXYAH:
+@@ -313,6 +314,21 @@ class KalmanFilterXYWH(KalmanFilterXYAH):
+         >>> print(covariance)
+     """
+ 
++    # ------------------------------------------------------------------
++    # Ablation knobs ("Ours"). Defaults reproduce vanilla BoT-SORT exactly.
++    # Set by BYTETracker.get_kalmanfilter() from the tracker YAML.
++    #   use_omega_penalty : Command 3 innovation-covariance inflation (project)
++    #   static_prior_beta : static-object velocity damping (predict)
++    #   min_wh_clamp      : geometric floor on w/h after update (update)
++    # ------------------------------------------------------------------
++    use_omega_penalty: bool = False
++    omega_tau: float = 0.35
++    omega_lambda: float = 10.0
++    static_prior_beta: float = 0.0
++    min_wh_clamp: float = 0.0
++    # Per-frame occlusion signal injected by STrack.update; ignored unless use_omega_penalty is on.
++    current_omega: float = 0.0
++
+     def initiate(self, measurement: np.ndarray):
+         """Create track from unassociated measurement.
+ 
+@@ -390,6 +406,10 @@ class KalmanFilterXYWH(KalmanFilterXYAH):
+         motion_cov = np.diag(np.square(np.r_[std_pos, std_vel]))
+ 
+         mean = np.dot(mean, self._motion_mat.T)
++
++        # NOTE: the static-object prior (Ours) lives in multi_predict(), which is the vectorized
++        # path the tracker actually runs (BOTrack.shared_kalman.multi_predict). This per-instance
++        # predict() is kept at upstream BoT-SORT behavior on purpose.
+         covariance = np.linalg.multi_dot((self._motion_mat, covariance, self._motion_mat.T)) + motion_cov
+ 
+         return mean, covariance
+@@ -423,6 +443,17 @@ class KalmanFilterXYWH(KalmanFilterXYAH):
+         if confidence is not None:  # NSA-Kalman: scale measurement noise by detection confidence (StrongSORT)
+             innovation_cov *= max(1.0 - float(confidence), 0.05)
+ 
++        # --- Command 3 (use_omega_penalty): occlusion-aware innovation inflation (Ours) --------
++        # When the track is occluded (omega > omega_tau) we distrust the measurement by scaling
++        # the innovation covariance by (1 + omega_lambda * omega). omega is the per-frame
++        # area-discrepancy signal injected by STrack.update via current_omega.
++        # Flag off (default) -> block skipped -> vanilla BoT-SORT.
++        if self.use_omega_penalty:
++            omega_val = float(getattr(self.current_omega, "item", lambda: self.current_omega)())
++            if omega_val > self.omega_tau:
++                penalization = 1.0 + (self.omega_lambda * omega_val)
++                innovation_cov = innovation_cov * penalization
++
+         mean = np.dot(self._update_mat, mean)
+         covariance = np.linalg.multi_dot((self._update_mat, covariance, self._update_mat.T))
+         return mean, covariance + innovation_cov
+@@ -462,6 +493,18 @@ class KalmanFilterXYWH(KalmanFilterXYAH):
+         motion_cov = np.asarray(motion_cov)
+ 
+         mean = np.dot(mean, self._motion_mat.T)
++
++        # --- Static-object prior (Ours) -------------------------------------------------
++        # Our targets (cacao pods) are physically static; all image motion is ego-motion,
++        # already removed by GMC (BoT-SORT, Aharon et al. 2022). So after the standard
++        # constant-velocity step we damp ONLY the velocities toward zero, in the spirit of
++        # the observation-centric design of OC-SORT (Cao et al. 2023): trust the detection,
++        # not accumulated velocity. State layout is [x, y, w, h, vx, vy, vw, vh]; we touch
++        # velocity columns 4:8 only -- position and covariance are left untouched.
++        # beta = static_prior_beta; default 0.0 -> identical to BoT-SORT.
++        if self.static_prior_beta:
++            mean[:, 4:8] *= 1.0 - self.static_prior_beta
++
+         left = np.dot(self._motion_mat, covariance).transpose((1, 0, 2))
+         covariance = np.dot(left, self._motion_mat.T) + motion_cov
+ 
+@@ -491,4 +534,22 @@ class KalmanFilterXYWH(KalmanFilterXYAH):
+             >>> measurement = np.array([0.5, 0.5, 1.2, 1.2])
+             >>> new_mean, new_covariance = kf.update(mean, covariance, measurement)
+         """
+-        return super().update(mean, covariance, measurement, confidence=confidence)
++        projected_mean, projected_cov = self.project(mean, covariance, confidence)
++
++        chol_factor, lower = scipy.linalg.cho_factor(projected_cov, lower=True, check_finite=False)
++        kalman_gain = scipy.linalg.cho_solve(
++            (chol_factor, lower), np.dot(covariance, self._update_mat.T).T, check_finite=False
++        ).T
++        innovation = measurement - projected_mean
++
++        new_mean = mean + np.dot(innovation, kalman_gain.T)
++
++        # --- Geometric floor (Ours) ---------------------------------------------------
++        # Prevent w/h collapse when the filter coasts under heavy occlusion.
++        # min_wh_clamp default 0.0 -> disabled -> vanilla BoT-SORT.
++        if self.min_wh_clamp:
++            new_mean[2] = max(self.min_wh_clamp, float(new_mean[2]))
++            new_mean[3] = max(self.min_wh_clamp, float(new_mean[3]))
++
++        new_covariance = covariance - np.linalg.multi_dot((kalman_gain, projected_cov, kalman_gain.T))
++        return new_mean, new_covariance
+diff --git a/ultralytics/trackers/utils/matching.py b/ultralytics/trackers/utils/matching.py
+index 00b796bc5..5ce84a4e2 100644
+--- a/ultralytics/trackers/utils/matching.py
++++ b/ultralytics/trackers/utils/matching.py
+@@ -98,6 +98,64 @@ def iou_distance(atracks: list, btracks: list) -> np.ndarray:
+     return 1 - ious  # cost matrix
+ 
+ 
++def diou_distance(atracks, btracks):
++    """
++    Compute cost based on Distance-IoU (DIoU).
++    DIoU = IoU - (rho^2 / c^2)
++    """
++    # 1. Extracción robusta de las coordenadas usando la misma lógica de iou_distance
++    if (atracks and isinstance(atracks[0], np.ndarray)) or (btracks and isinstance(btracks[0], np.ndarray)):
++        atlbrs = atracks
++        btlbrs = btracks
++    else:
++        # Extraemos en formato xyxy (top-left x, top-left y, bottom-right x, bottom-right y)
++        atlbrs = [track.xyxy for track in atracks]
++        btlbrs = [track.xyxy for track in btracks]
++
++    if len(atlbrs) == 0 or len(btlbrs) == 0:
++        return np.zeros((len(atlbrs), len(btlbrs)), dtype=np.float32)
++
++    # Asegurar tipos correctos y contiguos para operaciones NumPy y PyTorch subyacentes
++    atlbrs = np.ascontiguousarray(atlbrs, dtype=np.float32)
++    btlbrs = np.ascontiguousarray(btlbrs, dtype=np.float32)
++
++    # 2. Reutilizamos la función bbox_ioa de Ultralytics para obtener el IoU estándar
++    # bbox_ioa espera cajas en formato [N, 4] o [N, 5]
++    from ultralytics.utils.metrics import bbox_ioa
++    _ious = bbox_ioa(atlbrs, btlbrs, iou=True)
++
++    # Manejar el caso donde bbox_ioa devuelve un tensor de PyTorch (si se corrió en GPU)
++    if hasattr(_ious, 'cpu'):
++        _ious = _ious.cpu().numpy()
++
++    # 3. Calculamos los centros (cx, cy) de ambos grupos de cajas
++    # atlbrs y btlbrs están en formato [x1, y1, x2, y2]
++    cx_a = (atlbrs[:, 0] + atlbrs[:, 2]) / 2.0
++    cy_a = (atlbrs[:, 1] + atlbrs[:, 3]) / 2.0
++    cx_b = (btlbrs[:, 0] + btlbrs[:, 2]) / 2.0
++    cy_b = (btlbrs[:, 1] + btlbrs[:, 3]) / 2.0
++
++    # 4. Distancia euclidiana al cuadrado entre centros (rho^2) - Matriz [N, M]
++    rho2 = (cx_a[:, None] - cx_b[None, :])**2 + (cy_a[:, None] - cy_b[None, :])**2
++
++    # 5. Encontrar la caja envolvente más pequeña que cubre ambas cajas
++    tl_x = np.minimum(atlbrs[:, 0][:, None], btlbrs[:, 0][None, :])
++    tl_y = np.minimum(atlbrs[:, 1][:, None], btlbrs[:, 1][None, :])
++    br_x = np.maximum(atlbrs[:, 2][:, None], btlbrs[:, 2][None, :])
++    br_y = np.maximum(atlbrs[:, 3][:, None], btlbrs[:, 3][None, :])
++
++    # 6. Longitud de la diagonal al cuadrado de la caja envolvente (c^2)
++    c2 = (br_x - tl_x)**2 + (br_y - tl_y)**2
++    c2 = np.maximum(c2, 1e-7)  # Evitar división por cero
++
++    # 7. Cálculo final del DIoU
++    dious = _ious - (rho2 / c2)
++
++    # La matriz de costo es 1 - DIoU
++    cost_matrix = 1.0 - dious
++    return cost_matrix
++
++
+ def embedding_distance(tracks: list, detections: list) -> np.ndarray:
+     """Compute cosine distance between tracks and detections based on embeddings.
+ 

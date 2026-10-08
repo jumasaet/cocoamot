@@ -1,0 +1,34 @@
+# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
+
+# BoT-SORT tracker defaults for mode="track"
+# Docs: https://docs.ultralytics.com/modes/track
+
+tracker_type: botsort # (str) Tracker backend: botsort
+track_high_thresh: 0.25 # (float) First-stage match threshold; raise for cleaner tracks, lower to keep more
+track_low_thresh: 0.1 # (float) Second-stage threshold for low-score matches; balances recovery vs drift
+new_track_thresh: 0.25 # (float) Start a new track if no match ≥ this; higher reduces false tracks
+track_buffer: 30 # (int) Frames to keep lost tracks alive; higher handles occlusion, increases ID switches risk
+match_thresh: 0.8 # (float) Association similarity threshold (IoU/cost); tune with detector quality
+fuse_score: True # (bool) Fuse detection score with motion/IoU for matching; stabilizes weak detections
+
+# BoT-SORT specifics
+gmc_method: sparseOptFlow # (str) Global motion compensation: sparseOptFlow|orb|sift|ecc|none; helps moving camera scenes
+
+# ReID model related thresh
+proximity_thresh: 0.5 # (float) Min IoU to consider tracks proximate for ReID; higher is stricter
+appearance_thresh: 0.8 # (float) Min appearance similarity for ReID; raise to avoid identity swaps
+with_reid: False # (bool) Enable ReID model use; needs extra model and compute
+model: auto # (str) ReID model name/path; "auto" uses detector features if available
+
+# Ablation panel added by patches/ultralytics_ours.patch (required: the keys below are ignored without it).
+# Values used for every BoT-SORT result of the paper. NOTE: static_prior_beta=0.2 and min_wh_clamp=5.0 are
+# ACTIVE (they are not gated by the use_* flags): this is BoT-SORT + static-object prior, not vanilla BoT-SORT.
+# Set static_prior_beta: 0.0 and min_wh_clamp: 0.0 for vanilla Ultralytics 8.4.84 BoT-SORT.
+use_reid_firewall: False # (bool) Command 1: block ReID feature update while omega > omega_tau (occlusion)
+use_diou_rescue: False # (bool) Command 2: use DIoU instead of IoU + force appearance dist to 1.0 while occluded
+use_omega_penalty: False # (bool) Command 3: scale innovation covariance by 1 + omega_lambda*omega while occluded
+omega_tau: 0.25 # (float) Occlusion threshold on omega (area-discrepancy); a track is "occluded" when omega > omega_tau
+omega_lambda: 8.0 # (float) Command 3 gain for the innovation-covariance penalty (1 + omega_lambda*omega)
+omega_alpha: 0.0 # (float) EMA smoothing factor for omega; 0.0 = no smoothing (use raw per-frame omega)
+static_prior_beta: 0.2 # (float) Static-object prior: damp Kalman velocities by (1 - beta) each predict; 0.0 = off
+min_wh_clamp: 5.0 # (float) Geometric floor (px) on width/height after update; 0.0 = disabled

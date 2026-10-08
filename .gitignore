@@ -1,0 +1,19 @@
+# images are distributed separately (see data/README.md); gt, det, seqinfo and READMEs under data/ are tracked
+data/**/img1/*
+!data/**/img1/.gitkeep
+!data/**/img1/DOWNLOAD.md
+# packaged zips for Zenodo/HuggingFace upload (large binaries, never go to git)
+data/_packages/
+# weights and experiment outputs are distributed separately (see README)
+outputs/
+weights/
+*.npz
+# python / editors
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.vscode/
+.idea/
+.claude/
