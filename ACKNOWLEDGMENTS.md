@@ -2,8 +2,9 @@
 
 ## AIRIX
 
-We gratefully acknowledge the **AIRIX project** for providing the pre-trained real-domain detector weights
-(`weights/real_yolo12m/best.pt`, YOLOv12m) used in this work.
+We gratefully acknowledge the **AIRIX project** for supporting this research in two key ways:
+1. Providing the 3D assets (cacao trees, cacao pods, foliage, and related environmental elements) essential for constructing the synthetic environment in NVIDIA Isaac Sim, which the authors used to generate the synthetic CocoaMOT video sequences.
+2. Providing the pre-trained real-domain detector weights (`weights/real_yolo12m/best.pt`, YOLOv12m) used in this work.
 
 **Terms of use — detector weights only:** "The provided model weights... are released strictly for academic,
 educational, and non-commercial research purposes. Any commercial deployment, redistribution, or derivation
@@ -12,14 +13,12 @@ real detector weights (`weights/real_yolo12m/best.pt`). They do **not** apply to
 (synthetic or real) or to the synthetic detector weights, which the authors release under CC-BY-4.0 — see the
 [License section of the README](README.md#license).
 
-We additionally thank AIRIX: these weights allowed us to efficiently pre-annotate the real CocoaMOT video
-sequences. The resulting pre-annotations were subsequently corrected and manually verified in full by the
-authors of this paper. The real CocoaMOT dataset — video capture, the pre-annotation pipeline, and the final,
-verified annotations — is original work of the authors, not of AIRIX.
+We additionally thank AIRIX for the detector weights, which allowed us to efficiently pre-annotate the real
+CocoaMOT video sequences. The resulting pre-annotations were subsequently corrected and manually verified in full
+by the authors of this paper. The procedural scene generation, simulation pipeline, synthetic dataset rendering,
+and real dataset capture/verification are original contributions of the authors.
 
 To learn more about their initiatives, visit the [AIRIX Project](https://www.airixtech.com/).
-
-
 
 ## Third-party software and data
 
